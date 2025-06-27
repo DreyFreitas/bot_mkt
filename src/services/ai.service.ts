@@ -1,12 +1,10 @@
 import OpenAI from 'openai';
-import Anthropic from '@anthropic-ai/sdk';
 import { AIResponse, Conversation, HeitorConfig, PersonalityConfig } from '@/types';
-import { aiLogger, performanceLogger } from '@/utils/logger';
+import { aiLogger, performanceLogger } from '../utils/logger';
 import { ConversationService } from './conversation.service';
 
 export class AIService {
   private openai: OpenAI;
-  private anthropic: Anthropic;
   private config: HeitorConfig;
   private personality: PersonalityConfig;
   private conversationService: ConversationService;
@@ -20,13 +18,6 @@ export class AIService {
     if (process.env.OPENAI_API_KEY) {
       this.openai = new OpenAI({
         apiKey: process.env.OPENAI_API_KEY,
-      });
-    }
-
-    // Inicializar Anthropic
-    if (process.env.ANTHROPIC_API_KEY) {
-      this.anthropic = new Anthropic({
-        apiKey: process.env.ANTHROPIC_API_KEY,
       });
     }
   }
@@ -262,30 +253,13 @@ REGRAS DE CONTINUIDADE:
   }
 
   /**
-   * Chama a IA configurada (OpenAI ou Anthropic)
+   * Chama a IA configurada (apenas OpenAI)
    */
   private async callAI(prompt: string): Promise<{ text: string; confidence?: number; suggestedActions?: string[] }> {
-    const provider = process.env.AI_PROVIDER || 'openai';
-
     try {
-      if (provider === 'openai' && this.openai) {
-        return await this.callOpenAI(prompt);
-      } else if (provider === 'anthropic' && this.anthropic) {
-        return await this.callAnthropic(prompt);
-      } else {
-        // Fallback para OpenAI
-        return await this.callOpenAI(prompt);
-      }
+      return await this.callOpenAI(prompt);
     } catch (error) {
-      aiLogger.error('Erro no provedor principal, tentando fallback', { provider, error });
-      
-      // Tentar fallback
-      if (provider === 'openai' && this.anthropic) {
-        return await this.callAnthropic(prompt);
-      } else if (provider === 'anthropic' && this.openai) {
-        return await this.callOpenAI(prompt);
-      }
-      
+      aiLogger.error('Erro no OpenAI', { error });
       throw error;
     }
   }
@@ -315,30 +289,6 @@ REGRAS DE CONTINUIDADE:
     return {
       text: text.trim(),
       confidence: 0.9,
-      suggestedActions: this.extractSuggestedActions(text)
-    };
-  }
-
-  /**
-   * Chama Anthropic Claude
-   */
-  private async callAnthropic(prompt: string): Promise<{ text: string; confidence?: number; suggestedActions?: string[] }> {
-    const response = await this.anthropic.messages.create({
-      model: process.env.CLAUDE_MODEL || 'claude-3-sonnet-20240229',
-      max_tokens: parseInt(process.env.OPENAI_MAX_TOKENS || '1000'),
-      messages: [
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
-    });
-
-    const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
-    
-    return {
-      text: text.trim(),
-      confidence: 0.85,
       suggestedActions: this.extractSuggestedActions(text)
     };
   }

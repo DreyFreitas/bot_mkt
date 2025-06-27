@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { Conversation, ConversationContext, WhatsAppMessage, ClientPreferences } from '@/types';
-import { logger, taskLogger } from '@/utils/logger';
+import { logger, taskLogger } from '../utils/logger';
 import moment from 'moment';
 
 // Schema do MongoDB para Conversation

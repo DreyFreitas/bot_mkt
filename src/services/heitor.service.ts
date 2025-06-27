@@ -10,7 +10,7 @@ import {
   HeitorConfig,
   GroupConfig 
 } from '@/types';
-import { logger, whatsappLogger, taskLogger } from '@/utils/logger';
+import { logger, whatsappLogger, taskLogger } from '../utils/logger';
 import * as cron from 'node-cron';
 import moment from 'moment';
 

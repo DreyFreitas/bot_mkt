@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { logger } from '@/utils/logger';
+import { logger } from '../utils/logger';
 
 export class Database {
   private static instance: Database;
@@ -27,8 +27,7 @@ export class Database {
         maxPoolSize: 10,
         serverSelectionTimeoutMS: 5000,
         socketTimeoutMS: 45000,
-        bufferCommands: false,
-        bufferMaxEntries: 0,
+        bufferCommands: false
       });
 
       this.isConnected = true;
