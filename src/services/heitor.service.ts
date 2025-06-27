@@ -178,33 +178,53 @@ export class HeitorService {
   }
 
   /**
-   * Processa mensagens de clientes
+   * Processa mensagens de clientes com continuidade
    */
   private async handleClientMessage(message: WhatsAppMessage): Promise<void> {
-    // Buscar ou criar conversa
-    let conversation = await this.conversationService.getConversation(message.from);
-    if (!conversation) {
-      conversation = await this.conversationService.createConversation(message.from);
+    try {
+      // Buscar ou criar conversa
+      let conversation = await this.conversationService.getConversation(message.from);
+      if (!conversation) {
+        conversation = await this.conversationService.createConversation(message.from);
+        logger.info('Nova conversa criada para cliente', { phone: message.from });
+      }
+
+      // Gerar resposta com IA usando contexto completo
+      const aiResponse = await this.aiService.generateResponse(
+        message.body,
+        conversation,
+        false
+      );
+
+      // Enviar resposta
+      await this.whatsappService.sendMessage(message.from, aiResponse.text);
+
+      // Atualizar conversa com nova mensagem e resposta
+      await this.conversationService.updateConversation(
+        conversation.id, 
+        message, 
+        aiResponse
+      );
+
+      // Processar ações sugeridas
+      await this.processSuggestedActions(aiResponse, conversation);
+
+      // Log da continuidade
+      logger.info('Conversa processada com continuidade', {
+        phone: message.from,
+        topic: conversation.context.currentTopic,
+        messageCount: conversation.context.topicMessages.length,
+        emotionalState: conversation.context.emotionalState
+      });
+
+    } catch (error) {
+      logger.error('Erro ao processar mensagem de cliente:', error);
+      // Enviar mensagem de erro amigável
+      await this.whatsappService.sendMessage(
+        message.from, 
+        "Ops, tive um pequeno problema técnico! 😅 Pode tentar novamente?"
+      );
     }
-
-    // Gerar resposta com IA
-    const aiResponse = await this.aiService.generateResponse(
-      message.body,
-      conversation,
-      false
-    );
-
-    // Enviar resposta
-    await this.whatsappService.sendMessage(message.from, aiResponse.text);
-
-    // Atualizar conversa
-    await this.conversationService.updateConversation(conversation.id, {
-      lastActivity: new Date(),
-      messages: [...conversation.messages, message]
-    });
-
-    // Processar ações sugeridas
-    await this.processSuggestedActions(aiResponse, conversation);
   }
 
   /**
@@ -233,18 +253,39 @@ export class HeitorService {
   }
 
   /**
-   * Processa pedidos em grupos
+   * Processa pedidos em grupos com continuidade
    */
   private async handleGroupRequest(message: WhatsAppMessage): Promise<void> {
-    const conversation = await this.conversationService.getConversation(message.from);
-    
-    const aiResponse = await this.aiService.generateResponse(
-      message.body,
-      conversation || await this.conversationService.createConversation(message.from),
-      true
-    );
+    try {
+      // Buscar conversa do grupo ou criar nova
+      let conversation = await this.conversationService.getConversation(message.groupId!);
+      if (!conversation) {
+        conversation = await this.conversationService.createConversation(
+          message.groupId!, 
+          true, 
+          message.groupId!, 
+          'Grupo'
+        );
+      }
+      
+      const aiResponse = await this.aiService.generateResponse(
+        message.body,
+        conversation,
+        true
+      );
 
-    await this.whatsappService.sendMessage(message.groupId!, aiResponse.text);
+      await this.whatsappService.sendMessage(message.groupId!, aiResponse.text);
+
+      // Atualizar conversa do grupo
+      await this.conversationService.updateConversation(
+        conversation.id, 
+        message, 
+        aiResponse
+      );
+
+    } catch (error) {
+      logger.error('Erro ao processar pedido em grupo:', error);
+    }
   }
 
   /**
@@ -301,11 +342,11 @@ export class HeitorService {
   private async createContentTask(conversation: Conversation): Promise<void> {
     const task: Partial<Task> = {
       title: `Criar conteúdo para ${conversation.context.clientName || 'Cliente'}`,
-      description: `Solicitação de conteúdo baseada na conversa`,
+      description: `Solicitação de conteúdo baseada na conversa sobre ${conversation.context.currentTopic || 'marketing'}`,
       clientPhone: conversation.phoneNumber,
       clientName: conversation.context.clientName,
-      priority: 'medium',
-      tags: ['conteudo', 'marketing']
+      priority: conversation.context.urgency === 'high' ? 'high' : 'medium',
+      tags: ['conteudo', 'marketing', conversation.context.currentTopic || 'geral']
     };
 
     await this.taskService.createTask(task as Task);
@@ -316,7 +357,10 @@ export class HeitorService {
    */
   private async setReminder(conversation: Conversation): Promise<void> {
     // Implementar sistema de lembretes
-    logger.info('Lembrete definido para conversa', { conversationId: conversation.id });
+    logger.info('Lembrete definido para conversa', { 
+      conversationId: conversation.id,
+      topic: conversation.context.currentTopic 
+    });
   }
 
   /**

@@ -2,16 +2,19 @@ import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { AIResponse, Conversation, HeitorConfig, PersonalityConfig } from '@/types';
 import { aiLogger, performanceLogger } from '@/utils/logger';
+import { ConversationService } from './conversation.service';
 
 export class AIService {
   private openai: OpenAI;
   private anthropic: Anthropic;
   private config: HeitorConfig;
   private personality: PersonalityConfig;
+  private conversationService: ConversationService;
 
   constructor(config: HeitorConfig) {
     this.config = config;
     this.personality = config.personality;
+    this.conversationService = new ConversationService();
     
     // Inicializar OpenAI
     if (process.env.OPENAI_API_KEY) {
@@ -42,10 +45,15 @@ export class AIService {
       aiLogger.info('Gerando resposta para mensagem', {
         message: message.substring(0, 100),
         isGroup,
-        conversationId: conversation.id
+        conversationId: conversation.id,
+        topic: conversation.context.currentTopic,
+        emotionalState: conversation.context.emotionalState
       });
 
-      const prompt = this.buildPrompt(message, conversation, isGroup);
+      // Gerar resumo do contexto
+      const contextSummary = this.conversationService.generateContextSummary(conversation);
+      
+      const prompt = this.buildPrompt(message, conversation, contextSummary, isGroup);
       const response = await this.callAI(prompt);
       
       const aiResponse: AIResponse = {
@@ -61,7 +69,8 @@ export class AIService {
       perf.end({ 
         messageLength: message.length,
         responseLength: response.text.length,
-        intent: aiResponse.intent
+        intent: aiResponse.intent,
+        topic: conversation.context.currentTopic
       });
 
       return aiResponse;
@@ -73,15 +82,17 @@ export class AIService {
   }
 
   /**
-   * Constrói o prompt para a IA baseado na personalidade do Heitor
+   * Constrói o prompt para a IA baseado na personalidade do Heitor e contexto
    */
   private buildPrompt(
     message: string,
     conversation: Conversation,
+    contextSummary: string,
     isGroup: boolean
   ): string {
-    const context = this.buildContext(conversation);
     const personality = this.buildPersonalityPrompt();
+    const context = this.buildContextPrompt(conversation, contextSummary);
+    const conversationHistory = this.buildConversationHistory(conversation);
     
     return `
 ${personality}
@@ -89,10 +100,13 @@ ${personality}
 CONTEXTO DA CONVERSA:
 ${context}
 
+HISTÓRICO RECENTE DA CONVERSA:
+${conversationHistory}
+
 MENSAGEM RECEBIDA: "${message}"
 TIPO DE CONVERSA: ${isGroup ? 'GRUPO' : 'PRIVADA'}
 
-INSTRUÇÕES:
+INSTRUÇÕES IMPORTANTES:
 1. Responda como Heitor, um assistente de marketing carismático e humano
 2. Use linguagem natural, gírias moderadas e emojis quando apropriado
 3. Seja espontâneo e criativo
@@ -101,51 +115,102 @@ INSTRUÇÕES:
 6. Se for pedido de arte/campanha, peça detalhes específicos
 7. Se for grupo, mantenha engajamento com perguntas
 8. Se for privado com Andrey, foque em tarefas e lembretes
+9. MANTENHA CONTINUIDADE na conversa - não trate como nova conversa
+10. REFIRA-SE ao que foi dito anteriormente quando apropriado
+11. Use informações do contexto para personalizar a resposta
+12. Se o cliente mencionou algo antes, lembre-se e use isso
 
 RESPOSTA DO HEITOR:
 `;
   }
 
   /**
-   * Constrói o contexto da conversa
+   * Constrói o prompt do contexto da conversa
    */
-  private buildContext(conversation: Conversation): string {
+  private buildContextPrompt(conversation: Conversation, contextSummary: string): string {
     const context = conversation.context;
-    let contextStr = '';
+    let contextStr = contextSummary;
 
-    if (context.clientName) {
-      contextStr += `Cliente: ${context.clientName}\n`;
+    // Adicionar informações específicas do contexto
+    if (context.currentTopic) {
+      contextStr += `\nTÓPICO ATUAL: ${context.currentTopic}`;
+      contextStr += `\nMensagens neste tópico: ${context.topicMessages.length}`;
     }
 
-    if (context.businessType) {
-      contextStr += `Tipo de negócio: ${context.businessType}\n`;
+    if (context.emotionalState !== 'neutral') {
+      contextStr += `\nESTADO EMOCIONAL DO CLIENTE: ${context.emotionalState}`;
     }
 
+    if (context.urgency !== 'normal') {
+      contextStr += `\nNÍVEL DE URGÊNCIA: ${context.urgency}`;
+    }
+
+    if (context.lastIntent) {
+      contextStr += `\nÚLTIMA INTENÇÃO DETECTADA: ${context.lastIntent}`;
+    }
+
+    // Adicionar preferências do cliente
     if (context.preferences) {
       const prefs = context.preferences;
-      if (prefs.preferredColors) {
-        contextStr += `Cores preferidas: ${prefs.preferredColors.join(', ')}\n`;
+      if (prefs.preferredColors && prefs.preferredColors.length > 0) {
+        contextStr += `\nCORES PREFERIDAS: ${prefs.preferredColors.join(', ')}`;
       }
       if (prefs.preferredStyle) {
-        contextStr += `Estilo preferido: ${prefs.preferredStyle}\n`;
+        contextStr += `\nESTILO PREFERIDO: ${prefs.preferredStyle}`;
+      }
+      if (prefs.targetAudience) {
+        contextStr += `\nPÚBLICO-ALVO: ${prefs.targetAudience}`;
       }
     }
 
-    if (context.lastRequest) {
-      contextStr += `Último pedido: ${context.lastRequest}\n`;
-    }
-
+    // Adicionar tarefas pendentes
     if (context.pendingTasks && context.pendingTasks.length > 0) {
-      contextStr += `Tarefas pendentes: ${context.pendingTasks.length}\n`;
-    }
-
-    // Adicionar histórico recente
-    const recentHistory = context.conversationHistory.slice(-5);
-    if (recentHistory.length > 0) {
-      contextStr += `Histórico recente:\n${recentHistory.join('\n')}\n`;
+      contextStr += `\nTAREFAS PENDENTES: ${context.pendingTasks.length}`;
+      context.pendingTasks.forEach(task => {
+        contextStr += `\n- ${task.title} (${task.priority})`;
+      });
     }
 
     return contextStr;
+  }
+
+  /**
+   * Constrói o histórico da conversa para contexto
+   */
+  private buildConversationHistory(conversation: Conversation): string {
+    const context = conversation.context;
+    let history = '';
+
+    // Usar mensagens importantes da janela de contexto
+    if (context.contextWindow && context.contextWindow.length > 0) {
+      const importantMessages = context.contextWindow
+        .filter((item: any) => item.importance >= 6)
+        .slice(-8); // Últimas 8 mensagens importantes
+
+      if (importantMessages.length > 0) {
+        history += 'MENSAGENS IMPORTANTES:\n';
+        importantMessages.forEach((item: any) => {
+          history += `- ${item.message}\n`;
+        });
+      }
+    }
+
+    // Usar fluxo da conversa
+    if (context.conversationFlow && context.conversationFlow.length > 0) {
+      const recentFlow = context.conversationFlow.slice(-5); // Últimos 5 fluxos
+      history += '\nFLUXO RECENTE:\n';
+      recentFlow.forEach((flow: any) => {
+        history += `${flow.intent} -> ${flow.response.substring(0, 80)}...\n`;
+      });
+    }
+
+    // Se não há histórico estruturado, usar histórico simples
+    if (!history && context.conversationHistory && context.conversationHistory.length > 0) {
+      const recentHistory = context.conversationHistory.slice(-10); // Últimas 10 mensagens
+      history = 'HISTÓRICO RECENTE:\n' + recentHistory.join('\n');
+    }
+
+    return history || 'Nenhum histórico disponível.';
   }
 
   /**
@@ -172,6 +237,8 @@ CARACTERÍSTICAS:
 - Carismático e engajador
 - Nunca soa como robô
 - Usa expressões como "Show!", "Top demais!", "Partiu?", "Bora fazer sucesso!"
+- MANTÉM CONTINUIDADE nas conversas
+- REFERE-SE ao que foi dito anteriormente
 
 EXPERTISE EM MARKETING:
 - Estratégias de campanha
@@ -181,6 +248,16 @@ EXPERTISE EM MARKETING:
 - Datas comemorativas
 - Análise de público-alvo
 - Métricas de engajamento
+
+REGRAS DE CONTINUIDADE:
+1. SEMPRE lembre do que foi conversado antes
+2. Use informações do contexto para personalizar respostas
+3. Se o cliente mencionou algo, referencie isso
+4. Mantenha o tópico da conversa
+5. Não repita perguntas já respondidas
+6. Use o nome do cliente se souber
+7. Adapte o tom baseado no estado emocional
+8. Considere a urgência nas respostas
 `;
   }
 
@@ -222,7 +299,7 @@ EXPERTISE EM MARKETING:
       messages: [
         {
           role: 'system',
-          content: 'Você é Heitor, um assistente de marketing especializado e carismático.'
+          content: 'Você é Heitor, um assistente de marketing especializado e carismático que mantém continuidade nas conversas.'
         },
         {
           role: 'user',
